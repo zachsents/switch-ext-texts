@@ -1,0 +1,19 @@
+{
+  "name": "spur-texts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Mac's Messages as a Switch spur: every text both ways, and sends that report delivered and read.",
+  "license": "MIT",
+  "repository": "github:zachsents/spur-texts",
+  "spur": {
+    "name": "texts",
+    "command": [
+      "python3",
+      "./main.py"
+    ],
+    "shim": "switchboard",
+    "needs": [
+      "messages"
+    ]
+  }
+}
