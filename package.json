@@ -1,11 +1,11 @@
 {
-  "name": "spur-texts",
+  "name": "switch-ext-texts",
   "version": "0.1.0",
   "private": true,
-  "description": "The Mac's Messages as a Switch spur: every text both ways, and sends that report delivered and read.",
+  "description": "The Mac's Messages as a Switch extension: every text both ways, and sends that report delivered and read.",
   "license": "MIT",
-  "repository": "github:zachsents/spur-texts",
-  "spur": {
+  "repository": "github:zachsents/switch-ext-texts",
+  "extension": {
     "name": "texts",
     "command": [
       "python3",

@@ -171,7 +171,7 @@ class Server:
                  connections=None, reaches=None):
         """`connections` (in Switch): the accounts it needs, each {provider, scopes, multiple, kind?, label?}; it reaches
         them with accounts(), token() and adopt(), through whoever runs it. `reaches`: {calls, follows}, the other
-        spurs' tools it calls with call() and the brain's event types it follows with follow(), names or prefixes
+        extensions' tools it calls with call() and the brain's event types it follows with follow(), names or prefixes
         ending in *.
         `requests`: the appendages it asks with `sb request`, like "macos@local" or "macos@*";
         `notifies`: it runs `sb notify`; `reads` and `writes`: other streams its `sb` reads or writes.
@@ -428,7 +428,7 @@ class Server:
         return answer.get("result") or {}
 
     def call(self, name, arguments=None, timeout=120):
-        """Another spur's tool (one it declared in reaches.calls), as the agent would call it: its result."""
+        """Another extension's tool (one it declared in reaches.calls), as the agent would call it: its result."""
         return self.ask("switch/call", {"name": name, "arguments": arguments or {}}, timeout=timeout)
 
     def follow(self, types, fn):
