@@ -35,6 +35,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 
+import authentication
 import sbmcp
 
 NAME = "texts"
@@ -872,6 +873,14 @@ CHECK_SCHEMA = {
 
 
 @app.tool(schema=CHECK_SCHEMA, read_only=True)
+def public_message(con, row):
+    """Verification message bodies never enter public tool results or events."""
+    d = describe(con, row)
+    if re.search(r"(?:verification|security|sign[ -]?in|login|one[ -]?time|authentication)\s+(?:code|password)|(?:code|password)\s+(?:for|to)\s+(?:sign|log)", d["text"], re.I):
+        d["text"] = "Private authentication message"
+    return d
+
+
 def check(key="", guid="", to="", limit=10):
     """Where texts stand now, read from Messages: a send by its key, one message by its guid, or a
     conversation's latest messages (each with its words, even those only in attributedBody, its
@@ -892,7 +901,7 @@ def check(key="", guid="", to="", limit=10):
                               (guid,)).fetchone()
             if not row:
                 raise LookupError(f"Messages has no message {guid}")
-            return describe(con, row)
+            return public_message(con, row)
         if to:
             dest = resolve(to)
             if not dest.get("chat"):
@@ -903,7 +912,7 @@ def check(key="", guid="", to="", limit=10):
                 "WHERE c.guid = ? AND m.item_type = 0 AND m.associated_message_type = 0 ORDER BY m.date DESC LIMIT ?",
                 (dest["chat"], limit)).fetchall()
             return {"to": label(dest), "chat": dest["chat"], "last_service": dest.get("last_service"),
-                    "messages": [describe(con, r) for r in reversed(rows)]}
+                    "messages": [public_message(con, r) for r in reversed(rows)]}
     finally:
         con.close()
     latest = sorted(SENDS.values(), key=lambda s: s["started"], reverse=True)[:limit]
@@ -1057,7 +1066,7 @@ MESSAGE_ROWS = (f"SELECT {MESSAGE_COLUMNS}, c.guid AS chat FROM message m "
 
 def message_body(con, row):
     """One message as the record of it: who, which chat, its words and files, and whether the user has read it."""
-    d = describe(con, row)
+    d = public_message(con, row)
     who = d.get("from")
     name = contact_name(who) if who else None
     facts = {"guid": row["guid"], "chat": row["chat"], "from_me": d["from_me"], "from": who, "name": name,
@@ -1161,6 +1170,9 @@ def watch():
         except Exception as e:
             state["last_error"] = f"messages: {type(e).__name__}: {e}"
         time.sleep(TICK_S)
+
+
+authentication.register(app, connect, describe, MESSAGE_COLUMNS, APPLE_EPOCH)
 
 
 if __name__ == "__main__":
