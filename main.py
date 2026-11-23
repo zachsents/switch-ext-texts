@@ -72,9 +72,10 @@ app.event("message", "A message in Messages, from either side (who, which chat, 
 app.event("heartbeat", "How it is itself", stream=f"vitals/{NAME}", kind="observation", retention="signal")
 
 state = {"started_at": int(time.time() * 1000), "sends": 0, "failed": 0, "failing": {}, "last_failure": None,
-         "last_failure_at": None, "last_send": None}
+         "last_failure_at": None, "last_send": None, "caught_up": False, "caught_up_at": int(time.time() * 1000)}
 """`failing`: what's failing now, by part (watch, messages), each cleared once that part works again;
-`last_failure`: the latest failure, kept."""
+`last_failure`: the latest failure, kept; `caught_up`: whether the last look read every message chat.db
+had, and `caught_up_at` when a look last did."""
 SENDS = {}
 """Every send it made lately, by key: what it sent, its parts' message rows, and where it stands."""
 SEND_LOCK = threading.Lock()
@@ -1196,9 +1197,14 @@ def retry_skipped(con):
     save_seen()
 
 
+MESSAGE_PAGE = 200
+"""How many messages one look reads at most; the rest wait for the next."""
+
+
 def messages_once(now=None):
     """Records each message since the last it saw, and each unread one once the user reads it. One it
-    can't record is skipped (kept with why), never the end of the rest."""
+    can't record is skipped (kept with why), never the end of the rest. True when it read every message
+    chat.db had."""
     now = now or time.time()
     con = connect()
     try:
@@ -1209,7 +1215,7 @@ def messages_once(now=None):
             top = con.execute("SELECT max(ROWID) FROM message").fetchone()[0] or 0
             seen["rowid"] = max(0, top - BACKFILL)
         rows = con.execute(MESSAGE_ROWS + "WHERE m.ROWID > ? AND m.item_type = 0 AND m.associated_message_type = 0 "
-                           "ORDER BY m.ROWID LIMIT 200", (seen["rowid"],)).fetchall()
+                           "ORDER BY m.ROWID LIMIT ?", (seen["rowid"], MESSAGE_PAGE)).fetchall()
         for row in rows:
             try:
                 if not emit_message(con, row) and now - (apple_ms(row["date"]) or 0) / 1000 < UNREAD_FOR_S:
@@ -1231,6 +1237,7 @@ def messages_once(now=None):
                     seen["unread"].pop(row["guid"], None)
         if rows or seen["read_at"] == now:
             save_seen()
+        return len(rows) < MESSAGE_PAGE
     finally:
         con.close()
 
@@ -1269,12 +1276,13 @@ def heartbeat():
     if db_ok:
         mark("chat.db", None)
     watching = sum(1 for s in SENDS.values() if s.get("watch"))
+    behind_ms = 0 if state["caught_up"] else max(0, int(time.time() * 1000) - state["caught_up_at"])
     trouble = failing()
     summary = f"Failing: {trouble}" if trouble else "Ready"
     if watching:
         summary += f"; watching {watching} send{'s' if watching != 1 else ''}"
     app.emit("heartbeat", {"entity": f"sense:{NAME}", "summary": summary[:600],
-                           "facts": {"chat_db": db_ok, "messages_running": messages_running(), "watching": watching,
+                           "facts": {"behind_ms": behind_ms, "chat_db": db_ok, "messages_running": messages_running(), "watching": watching,
                                      "sends": state["sends"], "failed": state["failed"], "last_send": state["last_send"],
                                      "failing": trouble, "skipped": seen.get("skipped") or {},
                                      "last_failure": state["last_failure"], "last_failure_at": state["last_failure_at"]}})
@@ -1290,12 +1298,15 @@ def watch():
             trouble = f"{type(e).__name__}: {e}"
         mark("watch", trouble)
         try:
-            messages_once()
+            state["caught_up"] = messages_once()
             mark("messages", None)
         except Exception as e:
+            state["caught_up"] = False
             mark("messages", f"{type(e).__name__}: {e}")
-        if time.time() - last_beat >= HEARTBEAT_S or said != failing():
-            said = failing()
+        if state["caught_up"]:
+            state["caught_up_at"] = int(time.time() * 1000)
+        if time.time() - last_beat >= HEARTBEAT_S or said != (failing(), state["caught_up"]):
+            said = (failing(), state["caught_up"])
             heartbeat()
             last_beat = time.time()
         time.sleep(TICK_S)

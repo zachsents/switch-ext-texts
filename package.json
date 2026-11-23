@@ -14,6 +14,7 @@
     "shim": "switchboard",
     "needs": [
       "messages"
-    ]
+    ],
+    "heartbeat": 660000
   }
 }
