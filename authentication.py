@@ -26,7 +26,7 @@ def register(app, connect, describe, columns, epoch):
                                (sender, int((since / 1000 - epoch) * 1000000000))).fetchall()
             for row in rows:
                 d = describe(con, row)
-                if not since <= (row["date"] / 1000000000 + epoch) * 1000 <= time.time() * 1000 or service.lower() not in d["text"].lower():
+                if not since <= (row["date"] / 1000000000 + epoch) * 1000 <= time.time() * 1000 or service.lower() not in (d["text"] or "").lower():
                     continue
                 codes = set(re.findall(r"(?:verification|security|sign[ -]?in|login|one[ -]?time|authentication)\s+code(?:\s+is)?[\s:：-]{0,30}(\d{4,8})\b", d["text"], re.IGNORECASE))
                 codes.update(re.findall(r"\b(\d{4,8})\b[^\n]{0,40}(?:verification|security|sign[ -]?in|login|one[ -]?time|authentication)\s+code", d["text"], re.IGNORECASE))
