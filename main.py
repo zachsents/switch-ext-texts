@@ -253,7 +253,7 @@ def describe(con, row, kind=None, now_ms=None):
 
 # Who's who
 
-_contacts = {"at": 0, "names": {}}
+_contacts = {"at": 0, "names": {}, "people": {}}
 
 
 def handle_key(handle):
@@ -273,29 +273,55 @@ def handle_key(handle):
     raise ValueError(f"{handle!r} isn't a phone number or an email")
 
 
+def load_contacts():
+    """Contacts' names by number and email, and each name's numbers and emails, read again every 10 minutes."""
+    if time.time() - _contacts["at"] <= 600:
+        return
+    names, people = {}, {}
+    for path in glob.glob(os.path.join(CONTACTS, "Sources", "*", "AddressBook-v22.abcddb")) + \
+            [os.path.join(CONTACTS, "AddressBook-v22.abcddb")]:
+        try:
+            con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+            person = ("TRIM(COALESCE(r.ZFIRSTNAME, '') || ' ' || COALESCE(r.ZLASTNAME, '')), r.ZORGANIZATION, r.ZNICKNAME")
+            rows = []
+            for name, org, nick, number in con.execute(
+                    f"SELECT {person}, p.ZFULLNUMBER FROM ZABCDPHONENUMBER p JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER"):
+                try:
+                    rows.append((name, org, nick, handle_key(number)))
+                except ValueError:
+                    pass
+            for name, org, nick, email in con.execute(
+                    f"SELECT {person}, e.ZADDRESS FROM ZABCDEMAILADDRESS e JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER"):
+                if email:
+                    rows.append((name, org, nick, email.strip().lower()))
+            con.close()
+        except sqlite3.Error:
+            continue
+        for name, org, nick, key in rows:
+            shown = name or nick or org
+            if shown:
+                names.setdefault(key, shown)
+                entry = people.setdefault(shown.lower(), {"name": shown, "nick": (nick or "").lower(), "handles": set()})
+                entry["handles"].add(key)
+    _contacts.update(at=time.time(), names=names, people=people)
+
+
+def named(query):
+    """Everyone in Contacts whose name holds every word of `query`, each starting one of theirs; the
+    one whose name is exactly that when there is one."""
+    load_contacts()
+    want = re.findall(r"[\w'-]+", query.lower())
+    if not want:
+        return []
+    fits = [p for p in _contacts["people"].values()
+            if all(any(t.startswith(w) for t in re.findall(r"[\w'-]+", f"{p['name']} {p['nick']}".lower())) for w in want)]
+    exact = [p for p in fits if p["name"].lower() == " ".join(want)]
+    return exact if len(exact) == 1 else fits
+
+
 def contact_name(handle):
     """The name Contacts has for a number or email, if any."""
-    if time.time() - _contacts["at"] > 600:
-        names = {}
-        for path in glob.glob(os.path.join(CONTACTS, "Sources", "*", "AddressBook-v22.abcddb")) + \
-                [os.path.join(CONTACTS, "AddressBook-v22.abcddb")]:
-            try:
-                con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
-                person = ("TRIM(COALESCE(r.ZFIRSTNAME, '') || ' ' || COALESCE(r.ZLASTNAME, '')), r.ZORGANIZATION, r.ZNICKNAME")
-                for name, org, nick, number in con.execute(
-                        f"SELECT {person}, p.ZFULLNUMBER FROM ZABCDPHONENUMBER p JOIN ZABCDRECORD r ON r.Z_PK = p.ZOWNER"):
-                    try:
-                        names.setdefault(handle_key(number), name or nick or org)
-                    except ValueError:
-                        pass
-                for name, org, nick, email in con.execute(
-                        f"SELECT {person}, e.ZADDRESS FROM ZABCDEMAILADDRESS e JOIN ZABCDRECORD r ON r.Z_PK = e.ZOWNER"):
-                    if email:
-                        names.setdefault(email.strip().lower(), name or nick or org)
-                con.close()
-            except sqlite3.Error:
-                continue
-        _contacts.update(at=time.time(), names={k: v for k, v in names.items() if v})
+    load_contacts()
     try:
         return _contacts["names"].get(handle_key(handle))
     except ValueError:
@@ -869,7 +895,7 @@ CHECK_SCHEMA = {
     "properties": {
         "key": {"type": "string", "description": "A send's key (what send answered): where it stands now."},
         "guid": {"type": "string", "description": "Or one message's guid (from either side, like a comms/imessage record's)."},
-        "to": {"type": "string", "description": "Or a conversation (a number, an email, a guid or a group chat's name): its latest messages, both sides, oldest first, with each one's words, files and status."},
+        "to": {"type": "string", "description": "Or a conversation (a number, an email, a guid or a group chat's name), or a person's name in Contacts (every chat with any of their numbers and emails; several who fit come back as candidates): the latest messages, both sides, oldest first, with each one's words, files and status."},
         "limit": {"type": "integer", "description": "How many (default 10, at most 50)."},
     },
 }
@@ -882,6 +908,18 @@ def public_message(con, row):
     if d["text"] and re.search(r"(?:verification|security|sign[ -]?in|login|one[ -]?time|authentication)\s+(?:code|password)|(?:code|password)\s+(?:for|to)\s+(?:sign|log)", d["text"], re.I):
         d["text"] = "Private authentication message"
     return d
+
+
+def person_messages(con, person, limit):
+    """Someone's latest messages in every chat with one of their numbers or emails, both sides, oldest first."""
+    handles = sorted(person["handles"])
+    marks = ", ".join("?" for _ in handles)
+    rows = con.execute(
+        f"SELECT {MESSAGE_COLUMNS} FROM message m JOIN chat_message_join j ON j.message_id = m.ROWID "
+        "JOIN chat c ON c.ROWID = j.chat_id LEFT JOIN handle h ON h.ROWID = m.handle_id "
+        f"WHERE c.chat_identifier IN ({marks}) AND c.style = 45 AND m.item_type = 0 AND m.associated_message_type = 0 "
+        "ORDER BY m.date DESC LIMIT ?", (*handles, limit)).fetchall()
+    return {"to": person["name"], "handles": handles, "messages": [public_message(con, r) for r in reversed(rows)]}
 
 
 @app.tool(schema=CHECK_SCHEMA, read_only=True)
@@ -907,7 +945,16 @@ def check(key="", guid="", to="", limit=10):
                 raise LookupError(f"Messages has no message {guid}")
             return public_message(con, row)
         if to:
-            dest = resolve(to)
+            try:
+                dest = resolve(to)
+            except ValueError:
+                people = named(to)
+                if not people:
+                    raise
+                if len(people) > 1:
+                    raise LookupError(f"{len(people)} people in Contacts fit {to!r}: " + "; ".join(
+                        f"{p['name']} ({', '.join(sorted(p['handles']))})" for p in people[:8]))
+                return person_messages(con, people[0], limit)
             if not dest.get("chat"):
                 return {"to": label(dest), "messages": [], "note": "There's no conversation with them in Messages yet."}
             rows = con.execute(
