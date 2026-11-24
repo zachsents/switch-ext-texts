@@ -1,3 +1,5 @@
+**Moved to [zachsents/switch](https://github.com/zachsents/switch/tree/main/extensions/texts).** This repo is archived.
+
 # switch-ext-texts
 
 Every text both ways, and sends that report delivered and read.
